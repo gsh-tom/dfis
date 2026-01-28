@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DFIS Forecast - Green Street Housing</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Work+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Work Sans', sans-serif; background: linear-gradient(135deg, #f5f7fa 0%, #e8f0f2 100%); }
+        .heading-font { font-family: 'Playfair Display', serif; }
+        .glass-card { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.3); }
+        .btn-primary { background: linear-gradient(135deg, #059669 0%, #047857 100%); box-shadow: 0 4px 14px rgba(5, 150, 105, 0.3); transition: all 0.3s ease; }
+        .btn-primary:hover { box-shadow: 0 6px 20px rgba(5, 150, 105, 0.4); transform: translateY(-1px); }
+        .btn-secondary { background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%); box-shadow: 0 4px 14px rgba(99, 102, 241, 0.3); }
+        .btn-danger { background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%); }
+        .modal-overlay { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px); position: fixed; inset: 0; z-index: 50; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: #059669; box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1); }
+        .loading-spinner { border: 3px solid #f3f3f3; border-top: 3px solid #059669; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // API Configuration
+        const API_URL = 'https://script.google.com/macros/s/AKfycbwD7SqP1AYoK713mAFJicdcbC4JdUdj7SnuvUWqhjxiVJRpLTaFT0VlVa0kat-bYqjlgA/exec';
+        const SHEET_ID = '1kAhmKoOj_4foTmc2a-9POksUkYRkfVSME_aVgHeUNxY';
+        const TABS = {
+            PROJECTS: 'NCF Project Inputs',
+            MILESTONES: 'NCF Milestones'
+        };
+
+        // API Helper Functions
+        const api = {
+            async read(tab) {
+                const url = `${API_URL}?id=${SHEET_ID}&action=read&tab=${encodeURIComponent(tab)}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+                return data;
+            },
+            async create(tab, rowData) {
+                const url = `${API_URL}?id=${SHEET_ID}&tab=${encodeURIComponent(tab)}&action=create&data=${encodeURIComponent(JSON.stringify(rowData))}`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.error) throw new Error(result.error);
+                return result;
+            },
+            async update(tab, rowIndex, rowData) {
+                const url = `${API_URL}?id=${SHEET_ID}&tab=${encodeURIComponent(tab)}&action=update&row=${rowIndex}&data=${encodeURIComponent(JSON.stringify(rowData))}`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.error) throw new Error(result.error);
+                return result;
+            },
+            async delete(tab, rowIndex) {
+                const url = `${API_URL}?id=${SHEET_ID}&tab=${encodeURIComponent(tab)}&action=delete&row=${rowIndex}`;
+                const response = await fetch(url);
+                const result = await response.json();
+                if (result.error) throw new Error(result.error);
+                return result;
+            }
+        };
+
+        // Utility functions
+        const parseNumber = (val) => {
+            if (!val || val === '') return 0;
+            if (typeof val === 'number') return val;
+            const cleaned = String(val).replace(/[,$()]/g, '');
+            const num = parseFloat(cleaned);
+            return isNaN(num) ? 0 : num;
+        };
+        const formatCurrency = (num) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(num || 0);
+        const formatPercent = (num) => {
+            if (!num) return '0%';
+            const pct = typeof num === 'number' && num < 1 ? num * 100 : parseFloat(num) * 100;
+            return pct.toFixed(0) + '%';
+        };
+        const formatDate = (date) => !date ? '' : new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        const formatDateInput = (date) => {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toISOString().split('T')[0];
+        };
+        const getMonthKey = (date) => {
+            if (!date) return null;
+            const d = new Date(date);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        };
+        const formatMonthKey = (monthKey) => {
+            if (!monthKey) return '';
+            const [year, month] = monthKey.split('-');
+            return new Date(year, parseInt(month) - 1, 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+        };
+
+        function App() {
+            const [projectInputs, setProjectInputs] = useState([]);
+            const [milestones, setMilestones] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [view, setView] = useState('dashboard');
+            const [error, setError] = useState(null);
+            const [syncing, setSyncing] = useState(false);
+            const [selectedProject, setSelectedProject] = useState(null);
+
+            useEffect(() => {
+                loadData();
+            }, []);
+
+            const loadData = async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                    const [projects, milestonesData] = await Promise.all([
+                        api.read(TABS.PROJECTS),
+                        api.read(TABS.MILESTONES)
+                    ]);
+                    setProjectInputs(projects);
+                    setMilestones(milestonesData);
+                } catch (err) {
+                    setError(`Failed to load: ${err.message}`);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            const updateProject = async (updated) => {
+                setSyncing(true);
+                try {
+                    await api.update(TABS.PROJECTS, updated._row, updated);
+                    setProjectInputs(prev => prev.map(p => p._row === updated._row ? updated : p));
+                } catch (err) {
+                    alert(`Failed to update: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const addProject = async (newP) => {
+                setSyncing(true);
+                try {
+                    await api.create(TABS.PROJECTS, newP);
+                    await loadData();
+                } catch (err) {
+                    alert(`Failed to add: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const deleteProject = async (project) => {
+                if (!confirm(`Delete "${project.Project_Name}"? This will also delete its milestones.`)) return;
+                setSyncing(true);
+                try {
+                    await api.delete(TABS.PROJECTS, project._row);
+                    const projectMilestones = milestones.filter(m => m.Project_Name === project.Project_Name);
+                    for (const milestone of projectMilestones) {
+                        await api.delete(TABS.MILESTONES, milestone._row);
+                    }
+                    await loadData();
+                } catch (err) {
+                    alert(`Failed to delete: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const updateMilestone = async (updated) => {
+                setSyncing(true);
+                try {
+                    await api.update(TABS.MILESTONES, updated._row, updated);
+                    setMilestones(prev => prev.map(m => m._row === updated._row ? updated : m));
+                } catch (err) {
+                    alert(`Failed to update milestone: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const addMilestone = async (newM) => {
+                setSyncing(true);
+                try {
+                    await api.create(TABS.MILESTONES, newM);
+                    await loadData();
+                } catch (err) {
+                    alert(`Failed to add milestone: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const deleteMilestone = async (milestone) => {
+                if (!confirm(`Delete milestone "${milestone.Milestone}"?`)) return;
+                setSyncing(true);
+                try {
+                    await api.delete(TABS.MILESTONES, milestone._row);
+                    await loadData();
+                } catch (err) {
+                    alert(`Failed to delete milestone: ${err.message}`);
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            // Calculate integrity checks for NP Sponsor Fee
+            const integrityChecks = useMemo(() => {
+                return projectInputs.map(project => {
+                    const projectMilestones = milestones.filter(m => m.Project_Name === project.Project_Name);
+                    const sumMilestoneNP = projectMilestones.reduce((sum, m) => sum + parseNumber(m.NP), 0);
+                    const projectNP = parseNumber(project.NP_Sponsor_Fee);
+                    const difference = Math.abs(sumMilestoneNP - projectNP);
+                    const isMatch = difference < 1; // Allow $1 tolerance for rounding
+                    
+                    // Calculate GSH Fee totals
+                    const sumMilestoneGSH = projectMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+                    const expectedGSH = parseNumber(project.Net_Cash_Fee_to_GSH);
+                    const gshDifference = Math.abs(sumMilestoneGSH - expectedGSH);
+                    const gshMatch = gshDifference < 1;
+                    
+                    return {
+                        projectName: project.Project_Name,
+                        projectNP,
+                        sumMilestoneNP,
+                        npMatch: isMatch,
+                        npDifference: difference,
+                        sumMilestoneGSH,
+                        expectedGSH,
+                        gshMatch,
+                        gshDifference
+                    };
+                });
+            }, [projectInputs, milestones]);
+
+            // Calculate forecast data
+            const forecastData = useMemo(() => {
+                const monthlyData = {};
+                milestones.forEach(m => {
+                    if (m.Paid_Unpaid === 'Paid') return; // Skip paid milestones
+                    const monthKey = getMonthKey(m.Pmt_Date);
+                    if (!monthKey) return;
+                    
+                    if (!monthlyData[monthKey]) {
+                        monthlyData[monthKey] = {
+                            month: monthKey,
+                            totalNetCashFee: 0,
+                            totalGSHFee: 0,
+                            projects: new Set()
+                        };
+                    }
+                    monthlyData[monthKey].totalNetCashFee += parseNumber(m.Net_Cash_Fee);
+                    monthlyData[monthKey].totalGSHFee += parseNumber(m.GSH_Fee);
+                    monthlyData[monthKey].projects.add(m.Project_Name);
+                });
+                
+                return Object.values(monthlyData)
+                    .map(d => ({ ...d, projectCount: d.projects.size }))
+                    .sort((a, b) => a.month.localeCompare(b.month));
+            }, [milestones]);
+
+            if (loading) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen">
+                        <div className="loading-spinner"></div>
+                        <div className="mt-4 text-xl">Loading from Google Sheets...</div>
+                    </div>
+                );
+            }
+
+            if (error) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen p-8">
+                        <div className="glass-card rounded-2xl p-8 max-w-2xl">
+                            <h2 className="text-2xl font-bold text-red-600 mb-4">⚠️ Error</h2>
+                            <p className="text-gray-700 mb-4">{error}</p>
+                            <button onClick={loadData} className="btn-primary px-6 py-3 text-white rounded-lg font-medium">
+                                🔄 Retry
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen">
+                    <header className="glass-card shadow-lg sticky top-0 z-50">
+                        <div className="max-w-7xl mx-auto px-4 py-6">
+                            <div className="flex justify-between items-center">
+                                <div>
+                                    <h1 className="text-4xl font-bold heading-font text-green-700">DFIS Forecast</h1>
+                                    <p className="text-gray-600">Developer Fee Information System</p>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-sm font-medium">Green Street Housing, LLLC</div>
+                                    <div className="text-xs text-gray-500 mt-1">
+                                        {projectInputs.length} Projects • {milestones.length} Milestones
+                                        {syncing && <span className="ml-2 text-green-600 animate-pulse">⟳ Syncing...</span>}
+                                    </div>
+                                    <button onClick={loadData} className="text-xs text-blue-600 hover:underline mt-1">
+                                        🔄 Refresh
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    <nav className="glass-card shadow-sm border-b sticky top-24 z-40">
+                        <div className="max-w-7xl mx-auto px-4 py-2 flex space-x-2">
+                            <button onClick={() => { setView('dashboard'); setSelectedProject(null); }} className={`px-4 py-2 rounded font-medium ${view === 'dashboard' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>📊 Dashboard</button>
+                            <button onClick={() => setView('projects')} className={`px-4 py-2 rounded font-medium ${view === 'projects' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🏗️ Projects</button>
+                            <button onClick={() => setView('milestones')} className={`px-4 py-2 rounded font-medium ${view === 'milestones' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🎯 Milestones</button>
+                            {selectedProject && view === 'project-detail' && (
+                                <button onClick={() => setView('project-detail')} className="px-4 py-2 rounded font-medium bg-green-100 text-green-800">
+                                    📁 {selectedProject}
+                                </button>
+                            )}
+                        </div>
+                    </nav>
+
+                    <main className="max-w-7xl mx-auto px-4 py-6">
+                        {view === 'dashboard' && <DashboardView projectInputs={projectInputs} milestones={milestones} forecastData={forecastData} integrityChecks={integrityChecks} setSelectedProject={setSelectedProject} setView={setView} />}
+                        {view === 'projects' && <ProjectsView projectInputs={projectInputs} integrityChecks={integrityChecks} updateProject={updateProject} addProject={addProject} deleteProject={deleteProject} syncing={syncing} setSelectedProject={setSelectedProject} setView={setView} />}
+                        {view === 'milestones' && <MilestonesView milestones={milestones} projectInputs={projectInputs} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
+                        {view === 'project-detail' && selectedProject && <ProjectDetailView projectName={selectedProject} projectInputs={projectInputs} milestones={milestones} integrityChecks={integrityChecks} updateProject={updateProject} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
+                    </main>
+                </div>
+            );
+        }
+
+        function DashboardView({ projectInputs, milestones, forecastData, integrityChecks, setSelectedProject, setView }) {
+            const activeProjects = projectInputs.filter(p => p['Active/Archived'] === 'Active');
+            const totalGSHFees = activeProjects.reduce((sum, p) => sum + parseNumber(p.Net_Cash_Fee_to_GSH), 0);
+            const paidMilestones = milestones.filter(m => m.Paid_Unpaid === 'Paid');
+            const unpaidMilestones = milestones.filter(m => m.Paid_Unpaid === 'Unpaid');
+            const paidGSHFees = paidMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+            const unpaidGSHFees = unpaidMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+            
+            // Get projects with integrity issues
+            const npIssues = integrityChecks.filter(c => !c.npMatch);
+            const gshIssues = integrityChecks.filter(c => !c.gshMatch);
+
+            const handleProjectClick = (projectName) => {
+                setSelectedProject(projectName);
+                setView('project-detail');
+            };
+
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-3xl font-bold heading-font">Dashboard</h2>
+                    
+                    {(npIssues.length > 0 || gshIssues.length > 0) && (
+                        <div className="glass-card border-l-4 border-red-500 rounded-lg p-6 bg-red-50">
+                            <h3 className="text-lg font-bold text-red-800 mb-3">⚠️ Integrity Warnings</h3>
+                            {npIssues.length > 0 && (
+                                <div className="mb-3">
+                                    <div className="font-semibold text-red-700 mb-2">NP Sponsor Fee Mismatch ({npIssues.length} projects):</div>
+                                    <div className="space-y-1">
+                                        {npIssues.map(issue => (
+                                            <div key={issue.projectName} className="text-sm text-red-700">
+                                                <span className="font-medium cursor-pointer hover:underline" onClick={() => handleProjectClick(issue.projectName)}>{issue.projectName}</span>: 
+                                                Project NP = {formatCurrency(issue.projectNP)}, 
+                                                Milestone Sum = {formatCurrency(issue.sumMilestoneNP)}, 
+                                                Difference = {formatCurrency(issue.npDifference)}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {gshIssues.length > 0 && (
+                                <div>
+                                    <div className="font-semibold text-red-700 mb-2">GSH Fee Mismatch ({gshIssues.length} projects):</div>
+                                    <div className="space-y-1">
+                                        {gshIssues.map(issue => (
+                                            <div key={issue.projectName} className="text-sm text-red-700">
+                                                <span className="font-medium cursor-pointer hover:underline" onClick={() => handleProjectClick(issue.projectName)}>{issue.projectName}</span>: 
+                                                Expected GSH = {formatCurrency(issue.expectedGSH)}, 
+                                                Milestone Sum = {formatCurrency(issue.sumMilestoneGSH)}, 
+                                                Difference = {formatCurrency(issue.gshDifference)}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
+                    <div className="grid md:grid-cols-4 gap-4">
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Active Projects</div>
+                            <div className="text-3xl font-bold text-green-700">{activeProjects.length}</div>
+                            <div className="text-xs text-gray-500 mt-1">of {projectInputs.length} total</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Total GSH Fees</div>
+                            <div className="text-2xl font-bold text-green-700">{formatCurrency(totalGSHFees)}</div>
+                            <div className="text-xs text-gray-500 mt-1">across all projects</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Paid to Date</div>
+                            <div className="text-2xl font-bold text-blue-700">{formatCurrency(paidGSHFees)}</div>
+                            <div className="text-xs text-gray-500 mt-1">{paidMilestones.length} milestones</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Remaining</div>
+                            <div className="text-2xl font-bold text-orange-700">{formatCurrency(unpaidGSHFees)}</div>
+                            <div className="text-xs text-gray-500 mt-1">{unpaidMilestones.length} milestones</div>
+                        </div>
+                    </div>
+
+                    <div className="glass-card rounded-lg p-6">
+                        <h3 className="text-xl font-bold mb-4">Monthly Forecast (Unpaid Milestones)</h3>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-bold uppercase">Month</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Projects</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {forecastData.map((row, i) => (
+                                        <tr key={i} className="hover:bg-gray-50">
+                                            <td className="px-6 py-3 font-medium">{formatMonthKey(row.month)}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(row.totalNetCashFee)}</td>
+                                            <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(row.totalGSHFee)}</td>
+                                            <td className="px-6 py-3 text-right">{row.projectCount}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot className="bg-green-50 font-bold">
+                                    <tr>
+                                        <td className="px-6 py-3">TOTAL</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(forecastData.reduce((s, r) => s + r.totalNetCashFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right text-green-700">{formatCurrency(forecastData.reduce((s, r) => s + r.totalGSHFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right">-</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div className="glass-card rounded-lg p-6">
+                        <h3 className="text-xl font-bold mb-4">All Projects</h3>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left text-xs font-bold uppercase">Project</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Total Dev Fee</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-4 py-3 text-center text-xs font-bold uppercase">GSH %</th>
+                                        <th className="px-4 py-3 text-center text-xs font-bold uppercase">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {projectInputs.map((p, i) => (
+                                        <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleProjectClick(p.Project_Name)}>
+                                            <td className="px-4 py-3 font-medium text-green-700 hover:underline">{p.Project_Name}</td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Total_Developer_Fee))}</td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Net_Cash_Fee))}</td>
+                                            <td className="px-4 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(p.Net_Cash_Fee_to_GSH))}</td>
+                                            <td className="px-4 py-3 text-center">{formatPercent(p.GSH_Portion_Pct)}</td>
+                                            <td className="px-4 py-3 text-center">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${p['Active/Archived'] === 'Active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                                                    {p['Active/Archived']}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ProjectsView({ projectInputs, integrityChecks, updateProject, addProject, deleteProject, syncing, setSelectedProject, setView }) {
+            const [showModal, setShowModal] = useState(false);
+            const [editProject, setEditProject] = useState(null);
+
+            const handleEdit = (p) => {
+                setEditProject({...p});
+                setShowModal(true);
+            };
+
+            const handleAdd = () => {
+                setEditProject({
+                    Project_Name: '',
+                    Total_Developer_Fee: '',
+                    Deferred_Fee: '',
+                    Net_Cash_Fee: '',
+                    NP_Sponsor_Fee: 0,
+                    GSH_Portion_Pct: 0.5,
+                    Net_Cash_Fee_to_GSH: '',
+                    'Active/Archived': 'Active',
+                    NCF_Notes: ''
+                });
+                setShowModal(true);
+            };
+
+            const handleProjectClick = (projectName) => {
+                setSelectedProject(projectName);
+                setView('project-detail');
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-3xl font-bold heading-font">Projects Management</h2>
+                        <button onClick={handleAdd} disabled={syncing} className="btn-primary px-4 py-2 text-white rounded">
+                            ➕ Add Project
+                        </button>
+                    </div>
+                    <div className="glass-card rounded-lg overflow-hidden">
+                        <table className="min-w-full">
+                            <thead className="bg-gray-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-bold uppercase">Project Name</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">Total Dev Fee</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">NP Sponsor Fee</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                    <th className="px-6 py-3 text-center text-xs font-bold uppercase">Status</th>
+                                    <th className="px-6 py-3 text-center text-xs font-bold uppercase">Check</th>
+                                    <th className="px-6 py-3 text-center text-xs font-bold uppercase">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {projectInputs.map((p, i) => {
+                                    const integrity = integrityChecks.find(c => c.projectName === p.Project_Name);
+                                    const hasIssue = integrity && (!integrity.npMatch || !integrity.gshMatch);
+                                    return (
+                                        <tr key={i} className="hover:bg-gray-50">
+                                            <td className="px-6 py-3 font-medium text-green-700 hover:underline cursor-pointer" onClick={() => handleProjectClick(p.Project_Name)}>{p.Project_Name}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(p.Total_Developer_Fee))}</td>
+                                            <td className="px-6 py-3 text-right text-orange-600">{formatCurrency(parseNumber(p.NP_Sponsor_Fee))}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(p.Net_Cash_Fee))}</td>
+                                            <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(p.Net_Cash_Fee_to_GSH))}</td>
+                                            <td className="px-6 py-3 text-center">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${p['Active/Archived'] === 'Active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                                                    {p['Active/Archived']}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-3 text-center">
+                                                {hasIssue ? (
+                                                    <span className="text-red-600 font-bold cursor-pointer" title={`NP: ${integrity.npMatch ? '✓' : '✗'}, GSH: ${integrity.gshMatch ? '✓' : '✗'}`}>⚠️</span>
+                                                ) : (
+                                                    <span className="text-green-600">✓</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-3 text-center">
+                                                <button onClick={() => handleEdit(p)} disabled={syncing} className="text-blue-600 hover:underline mr-2 text-sm">✏️ Edit</button>
+                                                <button onClick={() => deleteProject(p)} disabled={syncing} className="text-red-600 hover:underline text-sm">🗑️ Delete</button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                    {showModal && (
+                        <ProjectModal
+                            project={editProject}
+                            onSave={(p) => {
+                                if (p._row !== undefined) {
+                                    updateProject(p);
+                                } else {
+                                    addProject(p);
+                                }
+                                setShowModal(false);
+                            }}
+                            onCancel={() => setShowModal(false)}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        function ProjectModal({ project, onSave, onCancel }) {
+            const [form, setForm] = useState(project);
+            
+            // Auto-calculate Total Cash Fee when Total Dev Fee or Deferred Fee changes
+            useEffect(() => {
+                const totalDev = parseNumber(form.Total_Developer_Fee);
+                const deferred = parseNumber(form.Deferred_Fee);
+                const totalCash = totalDev + deferred; // Deferred is typically negative
+                setForm(prev => ({ ...prev, Total_Cash_Fee: totalCash }));
+            }, [form.Total_Developer_Fee, form.Deferred_Fee]);
+            
+            // Auto-calculate Net Cash Fee when Total Cash Fee or NP Sponsor Fee changes
+            useEffect(() => {
+                const totalCash = parseNumber(form.Total_Cash_Fee);
+                const npFee = parseNumber(form.NP_Sponsor_Fee);
+                const netCash = totalCash - npFee;
+                setForm(prev => ({ ...prev, Net_Cash_Fee: netCash }));
+            }, [form.Total_Cash_Fee, form.NP_Sponsor_Fee]);
+            
+            // Auto-calculate GSH Fee when Net Cash Fee or GSH Portion changes
+            useEffect(() => {
+                const netCash = parseNumber(form.Net_Cash_Fee);
+                const gshPortion = parseNumber(form.GSH_Portion_Pct);
+                const gshFee = netCash * gshPortion;
+                setForm(prev => ({ ...prev, Net_Cash_Fee_to_GSH: gshFee }));
+            }, [form.Net_Cash_Fee, form.GSH_Portion_Pct]);
+
+            return (
+                <div className="modal-overlay flex items-center justify-center p-4">
+                    <div className="glass-card rounded-lg p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+                        <h3 className="text-2xl font-bold mb-4">{form._row !== undefined ? 'Edit' : 'Add'} Project</h3>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div>
+                                <label className="block font-semibold mb-2">Project Name *</label>
+                                <input required type="text" value={form.Project_Name || ''} onChange={(e) => setForm({...form, Project_Name: e.target.value})} className="w-full border-2 rounded px-4 py-2" />
+                            </div>
+                            
+                            <div className="bg-blue-50 p-4 rounded">
+                                <h4 className="font-bold text-blue-800 mb-3">Fee Calculation Flow</h4>
+                                <div className="grid md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block font-semibold mb-2">Total Developer Fee</label>
+                                        <input type="number" step="0.01" value={form.Total_Developer_Fee || ''} onChange={(e) => setForm({...form, Total_Developer_Fee: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2">Deferred Fee (negative)</label>
+                                        <input type="number" step="0.01" value={form.Deferred_Fee || ''} onChange={(e) => setForm({...form, Deferred_Fee: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2">= Total Cash Fee (Auto)</label>
+                                        <input type="number" step="0.01" value={form.Total_Cash_Fee || ''} readOnly className="w-full border-2 rounded px-4 py-2 bg-gray-100" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2 text-orange-700">- NP Sponsor Fee</label>
+                                        <input type="number" step="0.01" value={form.NP_Sponsor_Fee || ''} onChange={(e) => setForm({...form, NP_Sponsor_Fee: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2 border-orange-300" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2">= Net Cash Fee (Auto) *</label>
+                                        <input type="number" step="0.01" value={form.Net_Cash_Fee || ''} readOnly className="w-full border-2 rounded px-4 py-2 bg-gray-100" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2">× GSH Portion % *</label>
+                                        <input required type="number" step="0.01" min="0" max="1" value={form.GSH_Portion_Pct || ''} onChange={(e) => setForm({...form, GSH_Portion_Pct: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2" placeholder="0.5 for 50%" />
+                                    </div>
+                                    <div className="md:col-span-2">
+                                        <label className="block font-semibold mb-2 text-green-700">= Net Cash Fee to GSH (Auto)</label>
+                                        <input type="number" step="0.01" value={form.Net_Cash_Fee_to_GSH || ''} readOnly className="w-full border-2 rounded px-4 py-2 bg-green-50 font-bold text-green-700" />
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="grid md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block font-semibold mb-2">Status</label>
+                                    <select value={form['Active/Archived'] || 'Active'} onChange={(e) => setForm({...form, 'Active/Archived': e.target.value})} className="w-full border-2 rounded px-4 py-2">
+                                        <option value="Active">Active</option>
+                                        <option value="Archived">Archived</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block font-semibold mb-2">Notes</label>
+                                <textarea value={form.NCF_Notes || ''} onChange={(e) => setForm({...form, NCF_Notes: e.target.value})} className="w-full border-2 rounded px-4 py-2" rows="3"></textarea>
+                            </div>
+                            <div className="flex justify-end space-x-3 pt-4 border-t">
+                                <button type="button" onClick={onCancel} className="px-4 py-2 border-2 rounded">Cancel</button>
+                                <button type="submit" className="btn-primary px-4 py-2 text-white rounded">💾 Save to Google Sheet</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function MilestonesView({ milestones, projectInputs, updateMilestone, addMilestone, deleteMilestone, syncing }) {
+            const [showModal, setShowModal] = useState(false);
+            const [editMilestone, setEditMilestone] = useState(null);
+            const [filterProject, setFilterProject] = useState('');
+
+            const filteredMilestones = filterProject 
+                ? milestones.filter(m => m.Project_Name === filterProject)
+                : milestones;
+
+            const handleEdit = (m) => {
+                setEditMilestone({...m});
+                setShowModal(true);
+            };
+
+            const handleAdd = () => {
+                setEditMilestone({
+                    Project_Name: filterProject || '',
+                    Milestone: '',
+                    Paid_Unpaid: 'Unpaid',
+                    Pmt_Date: '',
+                    Net_Cash_Fee: '',
+                    GSH_Fee: '',
+                    Milestone_Notes: ''
+                });
+                setShowModal(true);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-3xl font-bold heading-font">Milestones Management</h2>
+                        <div className="flex items-center space-x-4">
+                            <select value={filterProject} onChange={(e) => setFilterProject(e.target.value)} className="border-2 rounded px-4 py-2">
+                                <option value="">All Projects</option>
+                                {projectInputs.map(p => <option key={p._row} value={p.Project_Name}>{p.Project_Name}</option>)}
+                            </select>
+                            <button onClick={handleAdd} disabled={syncing} className="btn-secondary px-4 py-2 text-white rounded">
+                                ➕ Add Milestone
+                            </button>
+                        </div>
+                    </div>
+                    <div className="glass-card rounded-lg overflow-hidden">
+                        <table className="min-w-full">
+                            <thead className="bg-gray-100">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-bold uppercase">Project</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold uppercase">Milestone</th>
+                                    <th className="px-6 py-3 text-center text-xs font-bold uppercase">Status</th>
+                                    <th className="px-6 py-3 text-left text-xs font-bold uppercase">Payment Date</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">Total</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">NP</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                    <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                    <th className="px-6 py-3 text-center text-xs font-bold uppercase">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {filteredMilestones.map((m, i) => (
+                                    <tr key={i} className="hover:bg-gray-50">
+                                        <td className="px-6 py-3 font-medium">{m.Project_Name}</td>
+                                        <td className="px-6 py-3">{m.Milestone}</td>
+                                        <td className="px-6 py-3 text-center">
+                                            <span className={`px-2 py-1 rounded-full text-xs font-medium ${m.Paid_Unpaid === 'Paid' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                                                {m.Paid_Unpaid}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-3">{formatDate(m.Pmt_Date)}</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(m.Total))}</td>
+                                        <td className="px-6 py-3 text-right text-orange-600">{formatCurrency(parseNumber(m.NP))}</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(m.Net_Cash_Fee))}</td>
+                                        <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(m.GSH_Fee))}</td>
+                                        <td className="px-6 py-3 text-center">
+                                            <button onClick={() => handleEdit(m)} disabled={syncing} className="text-blue-600 hover:underline mr-2 text-sm">✏️ Edit</button>
+                                            <button onClick={() => deleteMilestone(m)} disabled={syncing} className="text-red-600 hover:underline text-sm">🗑️ Delete</button>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                    {showModal && (
+                        <MilestoneModal
+                            milestone={editMilestone}
+                            projectInputs={projectInputs}
+                            onSave={(m) => {
+                                if (m._row !== undefined) {
+                                    updateMilestone(m);
+                                } else {
+                                    addMilestone(m);
+                                }
+                                setShowModal(false);
+                            }}
+                            onCancel={() => setShowModal(false)}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        function MilestoneModal({ milestone, projectInputs, onSave, onCancel }) {
+            const [form, setForm] = useState(milestone);
+            
+            // Auto-calculate Net Cash Fee when Total or NP changes
+            useEffect(() => {
+                const total = parseNumber(form.Total);
+                const np = parseNumber(form.NP);
+                const netCash = total - np;
+                setForm(prev => ({ ...prev, Net_Cash_Fee: netCash }));
+            }, [form.Total, form.NP]);
+            
+            // Auto-calculate GSH Fee when Net Cash Fee or project GSH % changes
+            useEffect(() => {
+                if (form.Project_Name) {
+                    const project = projectInputs.find(p => p.Project_Name === form.Project_Name);
+                    if (project) {
+                        const netCash = parseNumber(form.Net_Cash_Fee);
+                        const gshPortion = parseNumber(project.GSH_Portion_Pct);
+                        const gshFee = netCash * gshPortion;
+                        setForm(prev => ({ ...prev, GSH_Fee: gshFee }));
+                    }
+                }
+            }, [form.Net_Cash_Fee, form.Project_Name, projectInputs]);
+            
+            return (
+                <div className="modal-overlay flex items-center justify-center p-4">
+                    <div className="glass-card rounded-lg p-6 max-w-xl w-full">
+                        <h3 className="text-2xl font-bold mb-4">{form._row !== undefined ? 'Edit' : 'Add'} Milestone</h3>
+                        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="space-y-4">
+                            <div>
+                                <label className="block font-semibold mb-2">Project *</label>
+                                <select required value={form.Project_Name || ''} onChange={(e) => setForm({...form, Project_Name: e.target.value})} className="w-full border-2 rounded px-4 py-2">
+                                    <option value="">Select Project</option>
+                                    {projectInputs.map(p => <option key={p._row} value={p.Project_Name}>{p.Project_Name}</option>)}
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block font-semibold mb-2">Milestone Name *</label>
+                                <input required type="text" value={form.Milestone || ''} onChange={(e) => setForm({...form, Milestone: e.target.value})} className="w-full border-2 rounded px-4 py-2" />
+                            </div>
+                            <div className="grid md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block font-semibold mb-2">Status</label>
+                                    <select value={form.Paid_Unpaid || 'Unpaid'} onChange={(e) => setForm({...form, Paid_Unpaid: e.target.value})} className="w-full border-2 rounded px-4 py-2">
+                                        <option value="Unpaid">Unpaid</option>
+                                        <option value="Paid">Paid</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block font-semibold mb-2">Payment Date *</label>
+                                    <input required type="date" value={formatDateInput(form.Pmt_Date)} onChange={(e) => setForm({...form, Pmt_Date: e.target.value})} className="w-full border-2 rounded px-4 py-2" />
+                                </div>
+                            </div>
+                            
+                            <div className="bg-blue-50 p-4 rounded">
+                                <h4 className="font-bold text-blue-800 mb-3">Fee Calculation</h4>
+                                <div className="grid md:grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block font-semibold mb-2">Total Milestone Amount *</label>
+                                        <input required type="number" step="0.01" value={form.Total || ''} onChange={(e) => setForm({...form, Total: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2 text-orange-700">- NP Amount</label>
+                                        <input type="number" step="0.01" value={form.NP || ''} onChange={(e) => setForm({...form, NP: parseFloat(e.target.value) || 0})} className="w-full border-2 rounded px-4 py-2 border-orange-300" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2">= Net Cash Fee (Auto)</label>
+                                        <input type="number" step="0.01" value={form.Net_Cash_Fee || ''} readOnly className="w-full border-2 rounded px-4 py-2 bg-gray-100" />
+                                    </div>
+                                    <div>
+                                        <label className="block font-semibold mb-2 text-green-700">= GSH Fee (Auto)</label>
+                                        <input type="number" step="0.01" value={form.GSH_Fee || ''} readOnly className="w-full border-2 rounded px-4 py-2 bg-green-50 text-green-700 font-bold" />
+                                    </div>
+                                </div>
+                                {form.Project_Name && (
+                                    <div className="text-xs text-gray-600 mt-2">
+                                        GSH Portion: {formatPercent(projectInputs.find(p => p.Project_Name === form.Project_Name)?.GSH_Portion_Pct)}
+                                    </div>
+                                )}
+                            </div>
+                            
+                            <div>
+                                <label className="block font-semibold mb-2">Notes</label>
+                                <textarea value={form.Milestone_Notes || ''} onChange={(e) => setForm({...form, Milestone_Notes: e.target.value})} className="w-full border-2 rounded px-4 py-2" rows="2"></textarea>
+                            </div>
+                            <div className="flex justify-end space-x-3 pt-4 border-t">
+                                <button type="button" onClick={onCancel} className="px-4 py-2 border-2 rounded">Cancel</button>
+                                <button type="submit" className="btn-secondary px-4 py-2 text-white rounded">💾 Save to Google Sheet</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        function ProjectDetailView({ projectName, projectInputs, milestones, integrityChecks, updateProject, updateMilestone, addMilestone, deleteMilestone, syncing }) {
+            const project = projectInputs.find(p => p.Project_Name === projectName);
+            const projectMilestones = milestones.filter(m => m.Project_Name === projectName);
+            const integrity = integrityChecks.find(c => c.projectName === projectName);
+            const [showProjectModal, setShowProjectModal] = useState(false);
+            const [showMilestoneModal, setShowMilestoneModal] = useState(false);
+            const [editMilestone, setEditMilestone] = useState(null);
+
+            if (!project) return <div className="text-center py-12">Project not found</div>;
+
+            const paidMilestones = projectMilestones.filter(m => m.Paid_Unpaid === 'Paid');
+            const unpaidMilestones = projectMilestones.filter(m => m.Paid_Unpaid === 'Unpaid');
+            const paidAmount = paidMilestones.reduce((s, m) => s + parseNumber(m.GSH_Fee), 0);
+            const unpaidAmount = unpaidMilestones.reduce((s, m) => s + parseNumber(m.GSH_Fee), 0);
+            const totalNP = projectMilestones.reduce((s, m) => s + parseNumber(m.NP), 0);
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <h2 className="text-3xl font-bold heading-font">{project.Project_Name}</h2>
+                            <p className="text-gray-600">Project Details</p>
+                        </div>
+                        <button onClick={() => setShowProjectModal(true)} className="btn-primary px-4 py-2 text-white rounded">
+                            ✏️ Edit Project
+                        </button>
+                    </div>
+                    
+                    {integrity && (!integrity.npMatch || !integrity.gshMatch) && (
+                        <div className="glass-card border-l-4 border-red-500 rounded-lg p-6 bg-red-50">
+                            <h3 className="text-lg font-bold text-red-800 mb-2">⚠️ Integrity Issues</h3>
+                            {!integrity.npMatch && (
+                                <div className="text-sm text-red-700 mb-2">
+                                    <strong>NP Sponsor Fee Mismatch:</strong> Project NP = {formatCurrency(integrity.projectNP)}, 
+                                    Sum of Milestones = {formatCurrency(integrity.sumMilestoneNP)}, 
+                                    Difference = {formatCurrency(integrity.npDifference)}
+                                </div>
+                            )}
+                            {!integrity.gshMatch && (
+                                <div className="text-sm text-red-700">
+                                    <strong>GSH Fee Mismatch:</strong> Expected GSH = {formatCurrency(integrity.expectedGSH)}, 
+                                    Sum of Milestones = {formatCurrency(integrity.sumMilestoneGSH)}, 
+                                    Difference = {formatCurrency(integrity.gshDifference)}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    <div className="grid md:grid-cols-5 gap-4">
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Total Developer Fee</div>
+                            <div className="text-2xl font-bold text-gray-800">{formatCurrency(parseNumber(project.Total_Developer_Fee))}</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">NP Sponsor Fee</div>
+                            <div className="text-2xl font-bold text-orange-600">{formatCurrency(parseNumber(project.NP_Sponsor_Fee))}</div>
+                            <div className="text-xs text-gray-500 mt-1">Sum: {formatCurrency(totalNP)}</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Net Cash Fee to GSH</div>
+                            <div className="text-2xl font-bold text-green-700">{formatCurrency(parseNumber(project.Net_Cash_Fee_to_GSH))}</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Paid to Date</div>
+                            <div className="text-2xl font-bold text-blue-700">{formatCurrency(paidAmount)}</div>
+                            <div className="text-xs text-gray-500 mt-1">{paidMilestones.length} milestones</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Remaining</div>
+                            <div className="text-2xl font-bold text-orange-700">{formatCurrency(unpaidAmount)}</div>
+                            <div className="text-xs text-gray-500 mt-1">{unpaidMilestones.length} milestones</div>
+                        </div>
+                    </div>
+
+                    <div className="glass-card rounded-lg p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold">Milestones</h3>
+                            <button onClick={() => { setEditMilestone({ Project_Name: projectName, Milestone: '', Paid_Unpaid: 'Unpaid', Pmt_Date: '', Total: '', NP: 0, Net_Cash_Fee: '', GSH_Fee: '', Milestone_Notes: '' }); setShowMilestoneModal(true); }} className="btn-secondary px-4 py-2 text-white rounded text-sm">
+                                ➕ Add Milestone
+                            </button>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-bold uppercase">Milestone</th>
+                                        <th className="px-6 py-3 text-center text-xs font-bold uppercase">Status</th>
+                                        <th className="px-6 py-3 text-left text-xs font-bold uppercase">Date</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Total</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">NP</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-6 py-3 text-center text-xs font-bold uppercase">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {projectMilestones.map((m, i) => (
+                                        <tr key={i} className="hover:bg-gray-50">
+                                            <td className="px-6 py-3 font-medium">{m.Milestone}</td>
+                                            <td className="px-6 py-3 text-center">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${m.Paid_Unpaid === 'Paid' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                                                    {m.Paid_Unpaid}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-3">{formatDate(m.Pmt_Date)}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(m.Total))}</td>
+                                            <td className="px-6 py-3 text-right text-orange-600">{formatCurrency(parseNumber(m.NP))}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(parseNumber(m.Net_Cash_Fee))}</td>
+                                            <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(m.GSH_Fee))}</td>
+                                            <td className="px-6 py-3 text-center">
+                                                <button onClick={() => { setEditMilestone({...m}); setShowMilestoneModal(true); }} disabled={syncing} className="text-blue-600 hover:underline mr-2 text-sm">✏️</button>
+                                                <button onClick={() => deleteMilestone(m)} disabled={syncing} className="text-red-600 hover:underline text-sm">🗑️</button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot className="bg-green-50 font-bold">
+                                    <tr>
+                                        <td className="px-6 py-3" colSpan="3">TOTAL</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(projectMilestones.reduce((s, m) => s + parseNumber(m.Total), 0))}</td>
+                                        <td className="px-6 py-3 text-right text-orange-600">{formatCurrency(totalNP)}</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(projectMilestones.reduce((s, m) => s + parseNumber(m.Net_Cash_Fee), 0))}</td>
+                                        <td className="px-6 py-3 text-right text-green-700">{formatCurrency(projectMilestones.reduce((s, m) => s + parseNumber(m.GSH_Fee), 0))}</td>
+                                        <td></td>
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                    </div>
+
+                    {project.NCF_Notes && (
+                        <div className="glass-card rounded-lg p-6">
+                            <h3 className="text-lg font-bold mb-2">Notes</h3>
+                            <p className="text-gray-700">{project.NCF_Notes}</p>
+                        </div>
+                    )}
+
+                    {showProjectModal && (
+                        <ProjectModal
+                            project={project}
+                            onSave={(p) => { updateProject(p); setShowProjectModal(false); }}
+                            onCancel={() => setShowProjectModal(false)}
+                        />
+                    )}
+
+                    {showMilestoneModal && (
+                        <MilestoneModal
+                            milestone={editMilestone}
+                            projectInputs={projectInputs}
+                            onSave={(m) => {
+                                if (m._row !== undefined) {
+                                    updateMilestone(m);
+                                } else {
+                                    addMilestone(m);
+                                }
+                                setShowMilestoneModal(false);
+                            }}
+                            onCancel={() => setShowMilestoneModal(false)}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
