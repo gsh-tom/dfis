@@ -35,6 +35,10 @@
             PROJECTS: 'NCF Project Inputs',
             MILESTONES: 'NCF Milestones'
         };
+        
+        // Construction Tracker API Configuration
+        const CONSTRUCTION_SHEET_ID = '1ITy_qzMdu0NsKaCuZ6YwWWB_cMDdF44lY5nQhkx0ICQ';
+        const CONSTRUCTION_API_URL = API_URL; // Same Apps Script endpoint
 
         // API Helper Functions
         const api = {
@@ -102,6 +106,7 @@
         function App() {
             const [projectInputs, setProjectInputs] = useState([]);
             const [milestones, setMilestones] = useState([]);
+            const [constructionProjects, setConstructionProjects] = useState([]);
             const [loading, setLoading] = useState(true);
             const [view, setView] = useState('dashboard');
             const [error, setError] = useState(null);
@@ -116,16 +121,33 @@
                 setLoading(true);
                 setError(null);
                 try {
-                    const [projects, milestonesData] = await Promise.all([
+                    const [projects, milestonesData, constructionData] = await Promise.all([
                         api.read(TABS.PROJECTS),
-                        api.read(TABS.MILESTONES)
+                        api.read(TABS.MILESTONES),
+                        fetchConstructionData()
                     ]);
                     setProjectInputs(projects);
                     setMilestones(milestonesData);
+                    setConstructionProjects(constructionData);
                 } catch (err) {
                     setError(`Failed to load: ${err.message}`);
                 } finally {
                     setLoading(false);
+                }
+            };
+            
+            const fetchConstructionData = async () => {
+                try {
+                    const url = `${CONSTRUCTION_API_URL}?id=${CONSTRUCTION_SHEET_ID}&action=read&tab=Sheet1`;
+                    console.log('Fetching construction data from:', url);
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    console.log('Construction data loaded:', data.length, 'projects');
+                    return Array.isArray(data) ? data : [];
+                } catch (err) {
+                    console.error('Construction data fetch error:', err);
+                    return []; // Return empty array if construction data fails
                 }
             };
 
@@ -209,31 +231,33 @@
 
             // Calculate integrity checks for NP Sponsor Fee
             const integrityChecks = useMemo(() => {
-                return projectInputs.map(project => {
-                    const projectMilestones = milestones.filter(m => m.Project_Name === project.Project_Name);
-                    const sumMilestoneNP = projectMilestones.reduce((sum, m) => sum + parseNumber(m.NP), 0);
-                    const projectNP = parseNumber(project.NP_Sponsor_Fee);
-                    const difference = Math.abs(sumMilestoneNP - projectNP);
-                    const isMatch = difference < 1; // Allow $1 tolerance for rounding
-                    
-                    // Calculate GSH Fee totals
-                    const sumMilestoneGSH = projectMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
-                    const expectedGSH = parseNumber(project.Net_Cash_Fee_to_GSH);
-                    const gshDifference = Math.abs(sumMilestoneGSH - expectedGSH);
-                    const gshMatch = gshDifference < 1;
-                    
-                    return {
-                        projectName: project.Project_Name,
-                        projectNP,
-                        sumMilestoneNP,
-                        npMatch: isMatch,
-                        npDifference: difference,
-                        sumMilestoneGSH,
-                        expectedGSH,
-                        gshMatch,
-                        gshDifference
-                    };
-                });
+                return projectInputs
+                    .filter(project => project['Active/Archived'] === 'Active') // Only check active projects
+                    .map(project => {
+                        const projectMilestones = milestones.filter(m => m.Project_Name === project.Project_Name);
+                        const sumMilestoneNP = projectMilestones.reduce((sum, m) => sum + parseNumber(m.NP), 0);
+                        const projectNP = parseNumber(project.NP_Sponsor_Fee);
+                        const difference = Math.abs(sumMilestoneNP - projectNP);
+                        const isMatch = difference < 1; // Allow $1 tolerance for rounding
+                        
+                        // Calculate GSH Fee totals
+                        const sumMilestoneGSH = projectMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+                        const expectedGSH = parseNumber(project.Net_Cash_Fee_to_GSH);
+                        const gshDifference = Math.abs(sumMilestoneGSH - expectedGSH);
+                        const gshMatch = gshDifference < 1;
+                        
+                        return {
+                            projectName: project.Project_Name,
+                            projectNP,
+                            sumMilestoneNP,
+                            npMatch: isMatch,
+                            npDifference: difference,
+                            sumMilestoneGSH,
+                            expectedGSH,
+                            gshMatch,
+                            gshDifference
+                        };
+                    });
             }, [projectInputs, milestones]);
 
             // Calculate forecast data
@@ -313,6 +337,7 @@
                             <button onClick={() => { setView('dashboard'); setSelectedProject(null); }} className={`px-4 py-2 rounded font-medium ${view === 'dashboard' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>📊 Dashboard</button>
                             <button onClick={() => setView('projects')} className={`px-4 py-2 rounded font-medium ${view === 'projects' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🏗️ Projects</button>
                             <button onClick={() => setView('milestones')} className={`px-4 py-2 rounded font-medium ${view === 'milestones' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🎯 Milestones</button>
+                            <button onClick={() => setView('construction')} className={`px-4 py-2 rounded font-medium ${view === 'construction' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🚧 Construction Progress</button>
                             {selectedProject && view === 'project-detail' && (
                                 <button onClick={() => setView('project-detail')} className="px-4 py-2 rounded font-medium bg-green-100 text-green-800">
                                     📁 {selectedProject}
@@ -325,19 +350,65 @@
                         {view === 'dashboard' && <DashboardView projectInputs={projectInputs} milestones={milestones} forecastData={forecastData} integrityChecks={integrityChecks} setSelectedProject={setSelectedProject} setView={setView} />}
                         {view === 'projects' && <ProjectsView projectInputs={projectInputs} integrityChecks={integrityChecks} updateProject={updateProject} addProject={addProject} deleteProject={deleteProject} syncing={syncing} setSelectedProject={setSelectedProject} setView={setView} />}
                         {view === 'milestones' && <MilestonesView milestones={milestones} projectInputs={projectInputs} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
-                        {view === 'project-detail' && selectedProject && <ProjectDetailView projectName={selectedProject} projectInputs={projectInputs} milestones={milestones} integrityChecks={integrityChecks} updateProject={updateProject} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
+                        {view === 'construction' && <ConstructionPortfolioView constructionProjects={constructionProjects} setSelectedProject={setSelectedProject} setView={setView} />}
+                        {view === 'project-detail' && selectedProject && <ProjectDetailView projectName={selectedProject} projectInputs={projectInputs} milestones={milestones} constructionProjects={constructionProjects} integrityChecks={integrityChecks} updateProject={updateProject} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
                     </main>
                 </div>
             );
         }
 
         function DashboardView({ projectInputs, milestones, forecastData, integrityChecks, setSelectedProject, setView }) {
+            // State for showing archived projects - must be first
+            const [showArchived, setShowArchived] = useState(false);
+            
             const activeProjects = projectInputs.filter(p => p['Active/Archived'] === 'Active');
             const totalGSHFees = activeProjects.reduce((sum, p) => sum + parseNumber(p.Net_Cash_Fee_to_GSH), 0);
             const paidMilestones = milestones.filter(m => m.Paid_Unpaid === 'Paid');
             const unpaidMilestones = milestones.filter(m => m.Paid_Unpaid === 'Unpaid');
             const paidGSHFees = paidMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
             const unpaidGSHFees = unpaidMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+            
+            // Calculate next 12 months fees
+            const today = new Date();
+            const next12Months = new Date(today);
+            next12Months.setMonth(next12Months.getMonth() + 12);
+            const next12MonthsFees = unpaidMilestones
+                .filter(m => {
+                    if (!m.Pmt_Date) return false;
+                    const pmtDate = new Date(m.Pmt_Date);
+                    return pmtDate >= today && pmtDate <= next12Months;
+                })
+                .reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+            
+            // Calculate annual summary
+            const annualSummary = useMemo(() => {
+                const yearlyData = {};
+                milestones.forEach(m => {
+                    if (m.Paid_Unpaid === 'Paid') return; // Skip paid milestones
+                    const pmtDate = m.Pmt_Date ? new Date(m.Pmt_Date) : null;
+                    if (!pmtDate) return;
+                    
+                    const year = pmtDate.getFullYear();
+                    if (!yearlyData[year]) {
+                        yearlyData[year] = {
+                            year,
+                            totalNetCashFee: 0,
+                            totalGSHFee: 0,
+                            projectCount: new Set()
+                        };
+                    }
+                    yearlyData[year].totalNetCashFee += parseNumber(m.Net_Cash_Fee);
+                    yearlyData[year].totalGSHFee += parseNumber(m.GSH_Fee);
+                    yearlyData[year].projectCount.add(m.Project_Name);
+                });
+                
+                return Object.values(yearlyData)
+                    .map(d => ({ ...d, projectCount: d.projectCount.size }))
+                    .sort((a, b) => a.year - b.year);
+            }, [milestones]);
+            
+            // Filter projects based on archived toggle
+            const displayProjects = showArchived ? projectInputs : activeProjects;
             
             // Get projects with integrity issues
             const npIssues = integrityChecks.filter(c => !c.npMatch);
@@ -388,26 +459,52 @@
                         </div>
                     )}
                     
-                    <div className="grid md:grid-cols-4 gap-4">
+                    <div className="grid md:grid-cols-3 gap-4">
                         <div className="glass-card p-6 rounded-lg">
                             <div className="text-sm text-gray-600">Active Projects</div>
                             <div className="text-3xl font-bold text-green-700">{activeProjects.length}</div>
-                            <div className="text-xs text-gray-500 mt-1">of {projectInputs.length} total</div>
                         </div>
                         <div className="glass-card p-6 rounded-lg">
-                            <div className="text-sm text-gray-600">Total GSH Fees</div>
-                            <div className="text-2xl font-bold text-green-700">{formatCurrency(totalGSHFees)}</div>
-                            <div className="text-xs text-gray-500 mt-1">across all projects</div>
+                            <div className="text-sm text-gray-600">Total GSH Fees to be Paid</div>
+                            <div className="text-3xl font-bold text-blue-700">{formatCurrency(unpaidGSHFees)}</div>
                         </div>
                         <div className="glass-card p-6 rounded-lg">
-                            <div className="text-sm text-gray-600">Paid to Date</div>
-                            <div className="text-2xl font-bold text-blue-700">{formatCurrency(paidGSHFees)}</div>
-                            <div className="text-xs text-gray-500 mt-1">{paidMilestones.length} milestones</div>
+                            <div className="text-sm text-gray-600">Fees to be Paid in Next 12 Months</div>
+                            <div className="text-3xl font-bold text-purple-700">{formatCurrency(next12MonthsFees)}</div>
                         </div>
-                        <div className="glass-card p-6 rounded-lg">
-                            <div className="text-sm text-gray-600">Remaining</div>
-                            <div className="text-2xl font-bold text-orange-700">{formatCurrency(unpaidGSHFees)}</div>
-                            <div className="text-xs text-gray-500 mt-1">{unpaidMilestones.length} milestones</div>
+                    </div>
+
+                    <div className="glass-card rounded-lg p-6">
+                        <h3 className="text-xl font-bold mb-4">Annual Summary (Unpaid Milestones)</h3>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-bold uppercase">Year</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Projects</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {annualSummary.map((row, i) => (
+                                        <tr key={i} className="hover:bg-gray-50">
+                                            <td className="px-6 py-3 font-medium">{row.year}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(row.totalNetCashFee)}</td>
+                                            <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(row.totalGSHFee)}</td>
+                                            <td className="px-6 py-3 text-right">{row.projectCount}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot className="bg-green-50 font-bold">
+                                    <tr>
+                                        <td className="px-6 py-3">TOTAL</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(annualSummary.reduce((s, r) => s + r.totalNetCashFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right text-green-700">{formatCurrency(annualSummary.reduce((s, r) => s + r.totalGSHFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right">-</td>
+                                    </tr>
+                                </tfoot>
+                            </table>
                         </div>
                     </div>
 
@@ -446,7 +543,18 @@
                     </div>
 
                     <div className="glass-card rounded-lg p-6">
-                        <h3 className="text-xl font-bold mb-4">All Projects</h3>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold">All Projects</h3>
+                            <label className="flex items-center space-x-2 cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    checked={showArchived} 
+                                    onChange={(e) => setShowArchived(e.target.checked)}
+                                    className="w-4 h-4 rounded border-gray-300"
+                                />
+                                <span className="text-sm font-medium">Show Archived Projects</span>
+                            </label>
+                        </div>
                         <div className="overflow-x-auto">
                             <table className="min-w-full">
                                 <thead className="bg-gray-100">
@@ -455,26 +563,71 @@
                                         <th className="px-4 py-3 text-right text-xs font-bold uppercase">Total Dev Fee</th>
                                         <th className="px-4 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
                                         <th className="px-4 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Paid to Date</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">To be Paid</th>
                                         <th className="px-4 py-3 text-center text-xs font-bold uppercase">GSH %</th>
                                         <th className="px-4 py-3 text-center text-xs font-bold uppercase">Status</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y">
-                                    {projectInputs.map((p, i) => (
-                                        <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleProjectClick(p.Project_Name)}>
-                                            <td className="px-4 py-3 font-medium text-green-700 hover:underline">{p.Project_Name}</td>
-                                            <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Total_Developer_Fee))}</td>
-                                            <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Net_Cash_Fee))}</td>
-                                            <td className="px-4 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(p.Net_Cash_Fee_to_GSH))}</td>
-                                            <td className="px-4 py-3 text-center">{formatPercent(p.GSH_Portion_Pct)}</td>
-                                            <td className="px-4 py-3 text-center">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${p['Active/Archived'] === 'Active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
-                                                    {p['Active/Archived']}
-                                                </span>
-                                            </td>
+                                    {displayProjects.map((p, i) => {
+                                        const projectMilestones = milestones.filter(m => m.Project_Name === p.Project_Name);
+                                        const paidForProject = projectMilestones
+                                            .filter(m => m.Paid_Unpaid === 'Paid')
+                                            .reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+                                        const unpaidForProject = projectMilestones
+                                            .filter(m => m.Paid_Unpaid === 'Unpaid')
+                                            .reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+                                        
+                                        return (
+                                            <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleProjectClick(p.Project_Name)}>
+                                                <td className="px-4 py-3 font-medium text-green-700 hover:underline">{p.Project_Name}</td>
+                                                <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Total_Developer_Fee))}</td>
+                                                <td className="px-4 py-3 text-right">{formatCurrency(parseNumber(p.Net_Cash_Fee))}</td>
+                                                <td className="px-4 py-3 text-right text-green-700 font-medium">{formatCurrency(parseNumber(p.Net_Cash_Fee_to_GSH))}</td>
+                                                <td className="px-4 py-3 text-right text-blue-600">{formatCurrency(paidForProject)}</td>
+                                                <td className="px-4 py-3 text-right text-orange-600">{formatCurrency(unpaidForProject)}</td>
+                                                <td className="px-4 py-3 text-center">{formatPercent(p.GSH_Portion_Pct)}</td>
+                                                <td className="px-4 py-3 text-center">
+                                                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${p['Active/Archived'] === 'Active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'}`}>
+                                                        {p['Active/Archived']}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-bold uppercase">Month</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Net Cash Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">GSH Fee</th>
+                                        <th className="px-6 py-3 text-right text-xs font-bold uppercase">Projects</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {forecastData.map((row, i) => (
+                                        <tr key={i} className="hover:bg-gray-50">
+                                            <td className="px-6 py-3 font-medium">{formatMonthKey(row.month)}</td>
+                                            <td className="px-6 py-3 text-right">{formatCurrency(row.totalNetCashFee)}</td>
+                                            <td className="px-6 py-3 text-right text-green-700 font-medium">{formatCurrency(row.totalGSHFee)}</td>
+                                            <td className="px-6 py-3 text-right">{row.projectCount}</td>
                                         </tr>
                                     ))}
                                 </tbody>
+                                <tfoot className="bg-green-50 font-bold">
+                                    <tr>
+                                        <td className="px-6 py-3">TOTAL</td>
+                                        <td className="px-6 py-3 text-right">{formatCurrency(forecastData.reduce((s, r) => s + r.totalNetCashFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right text-green-700">{formatCurrency(forecastData.reduce((s, r) => s + r.totalGSHFee, 0))}</td>
+                                        <td className="px-6 py-3 text-right">-</td>
+                                    </tr>
+                                </tfoot>
                             </table>
                         </div>
                     </div>
@@ -872,9 +1025,478 @@
             );
         }
 
-        function ProjectDetailView({ projectName, projectInputs, milestones, integrityChecks, updateProject, updateMilestone, addMilestone, deleteMilestone, syncing }) {
+        // Construction Metrics Calculation
+        function calculateConstructionMetrics(constructionProject) {
+            if (!constructionProject) return null;
+            
+            const ntpDate = constructionProject['Notice to Proceed Date'] ? new Date(constructionProject['Notice to Proceed Date']) : null;
+            const today = new Date();
+            
+            let daysElapsed = 0;
+            let adjustedCompletionDate = null;
+            
+            if (ntpDate) {
+                daysElapsed = Math.floor((today - ntpDate) / (1000 * 60 * 60 * 24));
+                const contractDuration = parseNumber(constructionProject['Contract Duration (Days)']);
+                if (contractDuration) {
+                    const contractCompletionDate = new Date(ntpDate);
+                    contractCompletionDate.setDate(contractCompletionDate.getDate() + contractDuration);
+                    
+                    adjustedCompletionDate = new Date(contractCompletionDate);
+                    const delay = parseNumber(constructionProject['Delay (Days)']);
+                    if (delay) {
+                        adjustedCompletionDate.setDate(adjustedCompletionDate.getDate() + delay);
+                    }
+                }
+            }
+
+            const contractSum = parseNumber(constructionProject['Contract Sum']);
+            const approvedChangeOrders = parseNumber(constructionProject['Approved Change Orders']);
+            const adjustedContractSum = contractSum + approvedChangeOrders;
+            const contractBilled = parseNumber(constructionProject['Contract Billed']);
+            const percentCompleteValue = adjustedContractSum > 0 ? (contractBilled / adjustedContractSum) * 100 : 0;
+
+            const totalDuration = adjustedCompletionDate && ntpDate 
+                ? Math.floor((adjustedCompletionDate - ntpDate) / (1000 * 60 * 60 * 24))
+                : 0;
+            const percentCompleteTime = totalDuration > 0 ? (daysElapsed / totalDuration) * 100 : 0;
+
+            const pendingChangeOrders = parseNumber(constructionProject['Pending Change Orders']);
+            const potentialChangeOrders = parseNumber(constructionProject['Potential Change Orders']);
+            const hardCostContingency = parseNumber(constructionProject['Hard Cost Contingency']);
+            const totalEstContingencyUsed = approvedChangeOrders + pendingChangeOrders + potentialChangeOrders;
+            const percentContingencyUsed = hardCostContingency > 0 ? (totalEstContingencyUsed / hardCostContingency) * 100 : 0;
+
+            const scheduleVariance = percentCompleteValue - percentCompleteTime;
+
+            let alertLevel = 'good';
+            const alerts = [];
+
+            if (Math.abs(scheduleVariance) > 15) {
+                alertLevel = 'critical';
+                alerts.push(`Schedule variance: ${scheduleVariance > 0 ? 'ahead' : 'behind'} by ${Math.abs(scheduleVariance).toFixed(1)}%`);
+            }
+
+            if (percentContingencyUsed > 100) {
+                alertLevel = 'critical';
+                alerts.push('Contingency exceeded');
+            } else if (percentContingencyUsed > 75) {
+                if (alertLevel !== 'critical') alertLevel = 'warning';
+                alerts.push('Contingency usage high');
+            }
+
+            return {
+                daysElapsed,
+                adjustedCompletionDate,
+                adjustedContractSum,
+                percentCompleteValue,
+                percentCompleteTime,
+                totalEstContingencyUsed,
+                percentContingencyUsed,
+                scheduleVariance,
+                alertLevel,
+                alerts
+            };
+        }
+
+        function ConstructionDashboard({ constructionProject }) {
+            if (!constructionProject || !constructionProject['Notice to Proceed Date']) {
+                return (
+                    <div className="glass-card rounded-lg p-6 border-l-4 border-gray-500">
+                        <h3 className="text-xl font-bold mb-2">🏗️ Construction Tracking</h3>
+                        <p className="text-gray-500 text-sm">No construction data available for this project</p>
+                    </div>
+                );
+            }
+
+            const metrics = calculateConstructionMetrics(constructionProject);
+            if (!metrics) return null;
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                        <h3 className="text-2xl font-bold heading-font">🏗️ Construction Tracking</h3>
+                        <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                            metrics.alertLevel === 'critical' ? 'bg-red-600 text-white' :
+                            metrics.alertLevel === 'warning' ? 'bg-orange-500 text-white' :
+                            'bg-green-600 text-white'
+                        }`}>
+                            {metrics.alertLevel === 'critical' ? 'CRITICAL' :
+                             metrics.alertLevel === 'warning' ? 'WARNING' :
+                             'ON TRACK'}
+                        </span>
+                    </div>
+
+                    {metrics.alerts.length > 0 && (
+                        <div className="glass-card border-l-4 border-red-500 rounded-lg p-4 bg-red-50">
+                            <div className="font-bold text-red-800 mb-2">⚠️ Alerts</div>
+                            {metrics.alerts.map((alert, idx) => (
+                                <div key={idx} className="text-sm text-red-700 ml-4">• {alert}</div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="grid md:grid-cols-2 gap-6">
+                        <div className="glass-card rounded-lg p-6">
+                            <h4 className="font-bold text-lg mb-4 text-blue-700">📊 Progress Tracking</h4>
+                            
+                            <div className="space-y-4">
+                                <div>
+                                    <div className="flex justify-between mb-2">
+                                        <span className="text-sm font-medium">Time-Based Progress</span>
+                                        <span className="text-sm font-bold">{metrics.percentCompleteTime.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+                                        <div className="h-full bg-blue-500" style={{ width: `${Math.min(metrics.percentCompleteTime, 100)}%` }}></div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <div className="flex justify-between mb-2">
+                                        <span className="text-sm font-medium">Value-Based Progress</span>
+                                        <span className="text-sm font-bold">{metrics.percentCompleteValue.toFixed(1)}%</span>
+                                    </div>
+                                    <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+                                        <div className="h-full bg-green-500" style={{ width: `${Math.min(metrics.percentCompleteValue, 100)}%` }}></div>
+                                    </div>
+                                </div>
+
+                                <div className="pt-3 border-t">
+                                    <div className="flex justify-between">
+                                        <span className="text-sm font-medium">Schedule Variance</span>
+                                        <span className={`text-sm font-bold ${Math.abs(metrics.scheduleVariance) > 15 ? 'text-red-600' : 'text-green-600'}`}>
+                                            {metrics.scheduleVariance > 0 ? '+' : ''}{metrics.scheduleVariance.toFixed(1)}%
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-card rounded-lg p-6">
+                            <h4 className="font-bold text-lg mb-4 text-purple-700">📅 Schedule Information</h4>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Notice to Proceed</span>
+                                    <span className="font-medium">{formatDate(constructionProject['Notice to Proceed Date'])}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Contract Duration</span>
+                                    <span className="font-medium">{parseNumber(constructionProject['Contract Duration (Days)'])} days</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Delay Days</span>
+                                    <span className={`font-medium ${parseNumber(constructionProject['Delay (Days)']) > 0 ? 'text-red-600' : parseNumber(constructionProject['Delay (Days)']) < 0 ? 'text-green-600' : ''}`}>
+                                        {parseNumber(constructionProject['Delay (Days)'])}
+                                    </span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Days Elapsed</span>
+                                    <span className="font-medium">{metrics.daysElapsed}</span>
+                                </div>
+                                {metrics.adjustedCompletionDate && (
+                                    <div className="flex justify-between pt-2 border-t">
+                                        <span className="text-gray-600">Est. Completion</span>
+                                        <span className="font-bold text-blue-600">{formatDate(metrics.adjustedCompletionDate)}</span>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="glass-card rounded-lg p-6">
+                            <h4 className="font-bold text-lg mb-4 text-green-700">💰 Financial Summary</h4>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Original Contract Sum</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Contract Sum']))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Approved Change Orders</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Approved Change Orders']))}</span>
+                                </div>
+                                <div className="flex justify-between pt-2 border-t">
+                                    <span className="text-gray-600">Adjusted Contract Sum</span>
+                                    <span className="font-bold text-green-700">{formatCurrency(metrics.adjustedContractSum)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Contract Billed</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Contract Billed']))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Remaining to Bill</span>
+                                    <span className="font-medium">{formatCurrency(metrics.adjustedContractSum - parseNumber(constructionProject['Contract Billed']))}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-card rounded-lg p-6">
+                            <h4 className="font-bold text-lg mb-4 text-orange-700">🔧 Change Orders & Contingency</h4>
+                            <div className="space-y-3 text-sm">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Pending Change Orders</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Pending Change Orders']))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Potential Change Orders</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Potential Change Orders']))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Hard Cost Contingency</span>
+                                    <span className="font-medium">{formatCurrency(parseNumber(constructionProject['Hard Cost Contingency']))}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Total Est. Used</span>
+                                    <span className="font-medium">{formatCurrency(metrics.totalEstContingencyUsed)}</span>
+                                </div>
+                                <div className="pt-2 border-t">
+                                    <div className="flex justify-between mb-2">
+                                        <span className="text-gray-600">Contingency Used</span>
+                                        <span className={`font-bold ${
+                                            metrics.percentContingencyUsed > 100 ? 'text-red-600' :
+                                            metrics.percentContingencyUsed > 75 ? 'text-orange-600' :
+                                            'text-green-600'
+                                        }`}>
+                                            {metrics.percentContingencyUsed.toFixed(1)}%
+                                        </span>
+                                    </div>
+                                    <div className="w-full h-3 bg-gray-200 rounded-full overflow-hidden">
+                                        <div 
+                                            className="h-full" 
+                                            style={{ 
+                                                width: `${Math.min(metrics.percentContingencyUsed, 100)}%`,
+                                                background: metrics.percentContingencyUsed > 100 ? '#dc2626' : 
+                                                           metrics.percentContingencyUsed > 75 ? '#ea580c' : '#16a34a'
+                                            }}
+                                        ></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ConstructionPortfolioView({ constructionProjects, setSelectedProject, setView }) {
+            const activeProjects = constructionProjects.filter(p => p['Notice to Proceed Date']);
+            
+            if (activeProjects.length === 0) {
+                return (
+                    <div className="text-center py-12">
+                        <div className="glass-card rounded-lg p-8 max-w-2xl mx-auto">
+                            <h2 className="text-2xl font-bold mb-4">🚧 Construction Progress</h2>
+                            <p className="text-gray-600">No active construction projects found</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            const projectsWithMetrics = activeProjects.map(p => ({
+                project: p,
+                metrics: calculateConstructionMetrics(p)
+            })).filter(pm => pm.metrics);
+
+            // Portfolio-wide metrics
+            const totalValue = projectsWithMetrics.reduce((sum, { metrics }) => sum + metrics.adjustedContractSum, 0);
+            const avgTimeProgress = projectsWithMetrics.reduce((sum, { metrics }) => sum + metrics.percentCompleteTime, 0) / projectsWithMetrics.length;
+            const avgValueProgress = projectsWithMetrics.reduce((sum, { metrics }) => sum + metrics.percentCompleteValue, 0) / projectsWithMetrics.length;
+            const criticalProjects = projectsWithMetrics.filter(({ metrics }) => metrics.alertLevel === 'critical').length;
+            const warningProjects = projectsWithMetrics.filter(({ metrics }) => metrics.alertLevel === 'warning').length;
+            const onTrackProjects = projectsWithMetrics.filter(({ metrics }) => metrics.alertLevel === 'good').length;
+
+            const handleProjectClick = (projectName) => {
+                setSelectedProject(projectName);
+                setView('project-detail');
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div>
+                        <h2 className="text-3xl font-bold heading-font mb-2">🚧 Construction Portfolio</h2>
+                        <p className="text-gray-600">Real-time tracking of all active construction projects</p>
+                    </div>
+
+                    {/* Portfolio Summary Stats */}
+                    <div className="grid md:grid-cols-5 gap-4">
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Active Projects</div>
+                            <div className="text-3xl font-bold text-blue-700">{activeProjects.length}</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Total Value</div>
+                            <div className="text-3xl font-bold text-green-700">${(totalValue / 1000000).toFixed(1)}M</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Avg Progress</div>
+                            <div className="text-3xl font-bold text-purple-700">{avgValueProgress.toFixed(0)}%</div>
+                            <div className="text-xs text-gray-500 mt-1">Value-based</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">Critical</div>
+                            <div className="text-3xl font-bold text-red-600">{criticalProjects}</div>
+                            <div className="text-xs text-gray-500 mt-1">{warningProjects} warnings</div>
+                        </div>
+                        <div className="glass-card p-6 rounded-lg">
+                            <div className="text-sm text-gray-600">On Track</div>
+                            <div className="text-3xl font-bold text-green-600">{onTrackProjects}</div>
+                        </div>
+                    </div>
+
+                    {/* Projects Grid */}
+                    <div className="grid md:grid-cols-2 gap-6">
+                        {projectsWithMetrics.map(({ project, metrics }) => (
+                            <div 
+                                key={project._row} 
+                                className="glass-card rounded-lg p-6 cursor-pointer hover:shadow-xl transition-all hover:border-green-500"
+                                onClick={() => handleProjectClick(project['Project Name'])}
+                            >
+                                <div className="flex justify-between items-start mb-4">
+                                    <h3 className="text-xl font-bold text-green-700 hover:underline">
+                                        {project['Project Name']}
+                                    </h3>
+                                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                                        metrics.alertLevel === 'critical' ? 'bg-red-600 text-white' :
+                                        metrics.alertLevel === 'warning' ? 'bg-orange-500 text-white' :
+                                        'bg-green-600 text-white'
+                                    }`}>
+                                        {metrics.alertLevel === 'critical' ? 'CRITICAL' :
+                                         metrics.alertLevel === 'warning' ? 'WARNING' :
+                                         'ON TRACK'}
+                                    </span>
+                                </div>
+
+                                {metrics.alerts.length > 0 && (
+                                    <div className="bg-red-50 border-l-4 border-red-500 rounded p-3 mb-4">
+                                        {metrics.alerts.map((alert, idx) => (
+                                            <div key={idx} className="text-sm text-red-700">⚠ {alert}</div>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div className="space-y-4">
+                                    {/* Progress Bars */}
+                                    <div>
+                                        <div className="flex justify-between text-sm mb-2">
+                                            <span className="text-gray-600">Time Progress</span>
+                                            <span className="font-bold">{metrics.percentCompleteTime.toFixed(1)}%</span>
+                                        </div>
+                                        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                                            <div className="h-full bg-blue-500" style={{ width: `${Math.min(metrics.percentCompleteTime, 100)}%` }}></div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <div className="flex justify-between text-sm mb-2">
+                                            <span className="text-gray-600">Value Progress</span>
+                                            <span className="font-bold">{metrics.percentCompleteValue.toFixed(1)}%</span>
+                                        </div>
+                                        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                                            <div className="h-full bg-green-500" style={{ width: `${Math.min(metrics.percentCompleteValue, 100)}%` }}></div>
+                                        </div>
+                                    </div>
+
+                                    {/* Key Metrics Grid */}
+                                    <div className="grid grid-cols-2 gap-4 pt-3 border-t">
+                                        <div>
+                                            <div className="text-xs text-gray-500">Contract Value</div>
+                                            <div className="font-bold text-green-700">{formatCurrency(metrics.adjustedContractSum)}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-500">Days Elapsed</div>
+                                            <div className="font-bold">{metrics.daysElapsed} days</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-500">Schedule Variance</div>
+                                            <div className={`font-bold ${Math.abs(metrics.scheduleVariance) > 15 ? 'text-red-600' : 'text-green-600'}`}>
+                                                {metrics.scheduleVariance > 0 ? '+' : ''}{metrics.scheduleVariance.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div className="text-xs text-gray-500">Contingency Used</div>
+                                            <div className={`font-bold ${
+                                                metrics.percentContingencyUsed > 100 ? 'text-red-600' :
+                                                metrics.percentContingencyUsed > 75 ? 'text-orange-600' :
+                                                'text-green-600'
+                                            }`}>
+                                                {metrics.percentContingencyUsed.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {metrics.adjustedCompletionDate && (
+                                        <div className="pt-3 border-t">
+                                            <div className="text-xs text-gray-500">Est. Completion</div>
+                                            <div className="font-bold text-blue-600">{formatDate(metrics.adjustedCompletionDate)}</div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Detailed Table */}
+                    <div className="glass-card rounded-lg p-6">
+                        <h3 className="text-xl font-bold mb-4">Project Details</h3>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full">
+                                <thead className="bg-gray-100">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left text-xs font-bold uppercase">Project</th>
+                                        <th className="px-4 py-3 text-center text-xs font-bold uppercase">Status</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Contract Value</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Time %</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Value %</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Variance</th>
+                                        <th className="px-4 py-3 text-right text-xs font-bold uppercase">Contingency</th>
+                                        <th className="px-4 py-3 text-left text-xs font-bold uppercase">Est. Completion</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {projectsWithMetrics.map(({ project, metrics }) => (
+                                        <tr key={project._row} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleProjectClick(project['Project Name'])}>
+                                            <td className="px-4 py-3 font-medium text-green-700 hover:underline">{project['Project Name']}</td>
+                                            <td className="px-4 py-3 text-center">
+                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                                    metrics.alertLevel === 'critical' ? 'bg-red-100 text-red-800' :
+                                                    metrics.alertLevel === 'warning' ? 'bg-orange-100 text-orange-800' :
+                                                    'bg-green-100 text-green-800'
+                                                }`}>
+                                                    {metrics.alertLevel === 'critical' ? 'Critical' :
+                                                     metrics.alertLevel === 'warning' ? 'Warning' :
+                                                     'On Track'}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3 text-right">{formatCurrency(metrics.adjustedContractSum)}</td>
+                                            <td className="px-4 py-3 text-right">{metrics.percentCompleteTime.toFixed(1)}%</td>
+                                            <td className="px-4 py-3 text-right font-medium">{metrics.percentCompleteValue.toFixed(1)}%</td>
+                                            <td className={`px-4 py-3 text-right font-medium ${Math.abs(metrics.scheduleVariance) > 15 ? 'text-red-600' : 'text-green-600'}`}>
+                                                {metrics.scheduleVariance > 0 ? '+' : ''}{metrics.scheduleVariance.toFixed(1)}%
+                                            </td>
+                                            <td className={`px-4 py-3 text-right font-medium ${
+                                                metrics.percentContingencyUsed > 100 ? 'text-red-600' :
+                                                metrics.percentContingencyUsed > 75 ? 'text-orange-600' :
+                                                'text-green-600'
+                                            }`}>
+                                                {metrics.percentContingencyUsed.toFixed(1)}%
+                                            </td>
+                                            <td className="px-4 py-3">{metrics.adjustedCompletionDate ? formatDate(metrics.adjustedCompletionDate) : 'TBD'}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ProjectDetailView({ projectName, projectInputs, milestones, constructionProjects, integrityChecks, updateProject, updateMilestone, addMilestone, deleteMilestone, syncing }) {
             const project = projectInputs.find(p => p.Project_Name === projectName);
             const projectMilestones = milestones.filter(m => m.Project_Name === projectName);
+            const constructionProject = constructionProjects.find(c => 
+                c['Project Name'] === projectName || 
+                c.Project_Name === projectName || 
+                c.project_name === projectName
+            );
             const integrity = integrityChecks.find(c => c.projectName === projectName);
             const [showProjectModal, setShowProjectModal] = useState(false);
             const [showMilestoneModal, setShowMilestoneModal] = useState(false);
@@ -1001,6 +1623,8 @@
                             </table>
                         </div>
                     </div>
+
+                    <ConstructionDashboard constructionProject={constructionProject} />
 
                     {project.NCF_Notes && (
                         <div className="glass-card rounded-lg p-6">
