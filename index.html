@@ -350,6 +350,7 @@
                     <nav className="glass-card shadow-sm border-b sticky top-24 z-40">
                         <div className="max-w-7xl mx-auto px-4 py-2 flex space-x-2">
                             <button onClick={() => { setView('dashboard'); setSelectedProject(null); }} className={`px-4 py-2 rounded font-medium ${view === 'dashboard' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>📊 Dashboard</button>
+                            <button onClick={() => setView('pivot')} className={`px-4 py-2 rounded font-medium ${view === 'pivot' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>📈 Pivot Table</button>
                             <button onClick={() => setView('projects')} className={`px-4 py-2 rounded font-medium ${view === 'projects' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🏗️ Projects</button>
                             <button onClick={() => setView('milestones')} className={`px-4 py-2 rounded font-medium ${view === 'milestones' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🎯 Milestones</button>
                             <button onClick={() => setView('construction')} className={`px-4 py-2 rounded font-medium ${view === 'construction' ? 'bg-green-100 text-green-800' : 'hover:bg-gray-100'}`}>🚧 Construction Progress</button>
@@ -363,11 +364,129 @@
 
                     <main className="max-w-7xl mx-auto px-4 py-6">
                         {view === 'dashboard' && <DashboardView projectInputs={projectInputs} milestones={milestones} forecastData={forecastData} integrityChecks={integrityChecks} setSelectedProject={setSelectedProject} setView={setView} />}
+                        {view === 'pivot' && <PivotTableView projectInputs={projectInputs} milestones={milestones} />}
                         {view === 'projects' && <ProjectsView projectInputs={projectInputs} integrityChecks={integrityChecks} updateProject={updateProject} addProject={addProject} deleteProject={deleteProject} syncing={syncing} setSelectedProject={setSelectedProject} setView={setView} />}
                         {view === 'milestones' && <MilestonesView milestones={milestones} projectInputs={projectInputs} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
                         {view === 'construction' && <ConstructionPortfolioView constructionProjects={constructionProjects} setSelectedProject={setSelectedProject} setView={setView} />}
                         {view === 'project-detail' && selectedProject && <ProjectDetailView projectName={selectedProject} projectInputs={projectInputs} milestones={milestones} constructionProjects={constructionProjects} integrityChecks={integrityChecks} updateProject={updateProject} updateMilestone={updateMilestone} addMilestone={addMilestone} deleteMilestone={deleteMilestone} syncing={syncing} />}
                     </main>
+                </div>
+            );
+        }
+
+        function PivotTableView({ projectInputs, milestones }) {
+            const today = new Date();
+            
+            // Get active projects only
+            const activeProjects = projectInputs.filter(p => p['Active/Archived'] === 'Active');
+            
+            // Get forward-looking unpaid milestones only
+            const forwardMilestones = milestones.filter(m => {
+                if (m.Paid_Unpaid === 'Paid') return false;
+                if (!m.Pmt_Date) return false;
+                const pmtDate = new Date(m.Pmt_Date);
+                return pmtDate >= today;
+            });
+            
+            // Get unique months from forward milestones, sorted
+            const monthKeys = [...new Set(forwardMilestones.map(m => getMonthKey(m.Pmt_Date)))].sort();
+            
+            // Build pivot data: project -> month -> GSH Fee
+            const pivotData = activeProjects.map(project => {
+                const projectMilestones = forwardMilestones.filter(m => m.Project_Name === project.Project_Name);
+                const monthlyFees = {};
+                let rowTotal = 0;
+                
+                monthKeys.forEach(monthKey => {
+                    const monthMilestones = projectMilestones.filter(m => getMonthKey(m.Pmt_Date) === monthKey);
+                    const monthTotal = monthMilestones.reduce((sum, m) => sum + parseNumber(m.GSH_Fee), 0);
+                    monthlyFees[monthKey] = monthTotal;
+                    rowTotal += monthTotal;
+                });
+                
+                return {
+                    projectName: project.Project_Name,
+                    monthlyFees,
+                    rowTotal
+                };
+            }).filter(row => row.rowTotal > 0); // Only show projects with future fees
+            
+            // Calculate column totals
+            const columnTotals = monthKeys.reduce((totals, monthKey) => {
+                totals[monthKey] = pivotData.reduce((sum, row) => sum + row.monthlyFees[monthKey], 0);
+                return totals;
+            }, {});
+            
+            const grandTotal = Object.values(columnTotals).reduce((sum, val) => sum + val, 0);
+            
+            return (
+                <div className="space-y-6">
+                    <div>
+                        <h2 className="text-3xl font-bold heading-font">📈 Developer Fee Forecast - Pivot Table</h2>
+                        <p className="text-gray-600">Active projects with forward-looking GSH fees by month</p>
+                    </div>
+                    
+                    {pivotData.length === 0 ? (
+                        <div className="glass-card rounded-lg p-8 text-center">
+                            <p className="text-gray-600">No future unpaid milestones for active projects</p>
+                        </div>
+                    ) : (
+                        <div className="glass-card rounded-lg p-6">
+                            <div className="overflow-x-auto">
+                                <table className="min-w-full">
+                                    <thead className="bg-gray-100">
+                                        <tr>
+                                            <th className="px-4 py-3 text-left text-xs font-bold uppercase sticky left-0 bg-gray-100">Project</th>
+                                            {monthKeys.map(monthKey => (
+                                                <th key={monthKey} className="px-4 py-3 text-right text-xs font-bold uppercase whitespace-nowrap">
+                                                    {formatMonthKey(monthKey)}
+                                                </th>
+                                            ))}
+                                            <th className="px-4 py-3 text-right text-xs font-bold uppercase bg-green-50 sticky right-0">Total</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y">
+                                        {pivotData.map((row, i) => (
+                                            <tr key={i} className="hover:bg-gray-50">
+                                                <td className="px-4 py-3 font-medium text-green-700 sticky left-0 bg-white">{row.projectName}</td>
+                                                {monthKeys.map(monthKey => (
+                                                    <td key={monthKey} className="px-4 py-3 text-right">
+                                                        {row.monthlyFees[monthKey] > 0 ? formatCurrency(row.monthlyFees[monthKey]) : '-'}
+                                                    </td>
+                                                ))}
+                                                <td className="px-4 py-3 text-right font-bold text-green-700 bg-green-50 sticky right-0">
+                                                    {formatCurrency(row.rowTotal)}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                    <tfoot className="bg-green-100 font-bold">
+                                        <tr>
+                                            <td className="px-4 py-3 sticky left-0 bg-green-100">TOTAL</td>
+                                            {monthKeys.map(monthKey => (
+                                                <td key={monthKey} className="px-4 py-3 text-right text-green-700">
+                                                    {formatCurrency(columnTotals[monthKey])}
+                                                </td>
+                                            ))}
+                                            <td className="px-4 py-3 text-right text-green-700 text-lg sticky right-0 bg-green-100">
+                                                {formatCurrency(grandTotal)}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="glass-card rounded-lg p-6 bg-blue-50 border-l-4 border-blue-500">
+                        <h3 className="text-lg font-bold text-blue-800 mb-2">ℹ️ About This View</h3>
+                        <ul className="text-sm text-blue-700 space-y-1">
+                            <li>• Shows only <strong>active projects</strong> (archived projects excluded)</li>
+                            <li>• Shows only <strong>unpaid milestones</strong> with payment dates in the future</li>
+                            <li>• Values represent <strong>GSH fees</strong> expected each month</li>
+                            <li>• Projects with no future fees are hidden from the table</li>
+                        </ul>
+                    </div>
                 </div>
             );
         }
